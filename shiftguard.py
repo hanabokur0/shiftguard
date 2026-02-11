@@ -481,8 +481,16 @@ class ShiftGuard:
         
         # Excel出力
         with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
+            # 1) 縦持ち（分析向け）
             schedule_df.to_excel(writer, sheet_name='schedule', index=False)
             warnings_df.to_excel(writer, sheet_name='warnings', index=False)
+
+            # 2) カレンダー見た目（現場向け）：名前 × 日付 の横持ち
+            if not schedule_df.empty:
+                calendar_df = schedule_df.pivot(index='name', columns='date', values='shift_type')
+                # 日付列を昇順で並べる
+                calendar_df = calendar_df.reindex(sorted(calendar_df.columns), axis=1)
+                calendar_df.to_excel(writer, sheet_name='calendar')
         
         print("保存完了")
     
