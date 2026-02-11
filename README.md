@@ -45,7 +45,7 @@ git clone <このリポジトリURL>
 cd shiftguard
 
 # 依存パッケージをインストール
-pip install pandas openpyxl pyyaml jpholiday
+pip install -r requirements.txt
 ```
 
 ## 使い方
