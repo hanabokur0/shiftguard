@@ -480,174 +480,135 @@ class ShiftGuard:
             })
     
     def save_output(self, output_path: str):
-        """結果をExcelに出力"""
+        """結果をExcelに出力（schedule / warnings / calendar）"""
         print(f"結果を保存中: {output_path}")
-        
-        # スケジュールをDataFrameに
+
         schedule_df = pd.DataFrame(self.schedule)
-        if not schedule_df.empty:
-            schedule_df = schedule_df.sort_values(['date', 'shift_type', 'staff_id'])
-        
-        # 警告をDataFrameに
         warnings_df = pd.DataFrame(self.warnings)
-        
-        # Excel出力
+
+        # calendar（横持ち）を作る：縦=名前、横=日付
+        # date列は文字列 YYYY-MM-DD なので、列順を日付順にそろえる
+        schedule_df['date'] = pd.to_datetime(schedule_df['date'])
+        schedule_df['date_str'] = schedule_df['date'].dt.strftime('%Y-%m-%d')
+
+        calendar_df = schedule_df.pivot_table(
+            index='name',
+            columns='date_str',
+            values='shift_type',
+            aggfunc='first'
+        ).fillna('OFF')
+
+        # 表示用の短縮（好みで変更OK）
+        display_map = {'DAY': 'D', 'NIGHT': '準夜', 'OFF': '休'}
+        calendar_df = calendar_df.replace(display_map)
+
+        # Excel出力（3シート）
         with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
-            # 1) 縦持ち（分析向け）
-            schedule_df.to_excel(writer, sheet_name='schedule', index=False)
+            # 縦持ち（分析・ログ用）
+            out_schedule = schedule_df[['date', 'shift_type', 'staff_id', 'name']].copy()
+            out_schedule['date'] = out_schedule['date'].dt.strftime('%Y-%m-%d')
+            out_schedule.to_excel(writer, sheet_name='schedule', index=False)
+
+            # 警告
+            if len(warnings_df) == 0:
+                warnings_df = pd.DataFrame([{
+                    'severity': 'GREEN', 'code': 'ALL_CLEAR',
+                    'message': '重大な労務リスクは検出されませんでした', 'evidence': ''
+                }])
             warnings_df.to_excel(writer, sheet_name='warnings', index=False)
-            
-            # 2) カレンダー見た目（現場向け）：縦軸=メンバー、横軸=日付
-            if not schedule_df.empty:
-                self._create_calendar_sheet(writer, schedule_df)
-        
-        print("保存完了")
-    
-    def _create_calendar_sheet(self, writer, schedule_df):
-        """カレンダー形式のシートを作成（縦軸=メンバー、横軸=日付）"""
-        # ---- ピボット変換（縦軸=name、横軸=date） ----
-        calendar_df = schedule_df.pivot(index='name', columns='date', values='shift_type')
-        calendar_df = calendar_df.reindex(sorted(calendar_df.columns), axis=1)
-        
-        # 表示用の記号に置換（画像に合わせる）
-        display_map = {'DAY': '', 'NIGHT': '準夜', 'OFF': '休'}
-        calendar_df = calendar_df.fillna('休').replace(display_map)
-        
-        # ---- Excelに書き出し（開始位置を3行下げる） ----
-        start_row = 3
-        sheet_name = 'calendar'
-        calendar_df.to_excel(writer, sheet_name=sheet_name, startrow=start_row, startcol=0)
-        
-        # ---- openpyxlで体裁を整える ----
-        wb = writer.book
-        ws = writer.sheets[sheet_name]
-        
-        # 日付リスト（YYYY-MM-DD）
-        date_cols = list(calendar_df.columns)
-        
-        # 年月タイトル
-        ym = str(self.config.get('month', ''))
-        if not ym and date_cols:
-            ym = date_cols[0][:7]
-        title = f"{ym} 勤務表"
-        
-        # 行番号の定義
-        title_row = 1
-        header_row_date = start_row + 1  # 日付行
-        header_row_wday = start_row + 2  # 曜日行
-        body_start_row = start_row + 2 + 1
-        
-        # 最終列
-        last_col = 1 + len(date_cols)
-        
-        # タイトル行（セル結合）
-        ws.merge_cells(start_row=title_row, start_column=1, end_row=title_row, end_column=last_col)
-        cell = ws.cell(row=title_row, column=1, value=title)
-        cell.font = Font(bold=True, size=14)
-        cell.alignment = Alignment(horizontal='center', vertical='center')
-        
-        # A列ヘッダ（メンバー）
-        ws.cell(row=header_row_date, column=1, value="メンバー")
-        ws.cell(row=header_row_wday, column=1, value="")
-        
-        # 罫線・色の定義
-        thin = Side(style="thin", color="999999")
-        border = Border(left=thin, right=thin, top=thin, bottom=thin)
-        
-        fill_sat = PatternFill("solid", fgColor="D9EAF7")   # 土：薄青
-        fill_sun = PatternFill("solid", fgColor="F9D6D5")   # 日祝：薄赤
-        fill_week = PatternFill("solid", fgColor="FFFFFF")  # 平日
-        fill_off = PatternFill("solid", fgColor="EEEEEE")   # 休：薄グレー
-        fill_day = PatternFill("solid", fgColor="E6F4EA")   # 勤務（空白）：薄緑
-        fill_night = PatternFill("solid", fgColor="E8F0FE") # 準夜：薄青紫
-        
-        font_header = Font(bold=True)
-        align_center = Alignment(horizontal="center", vertical="center", wrap_text=True)
-        
-        # 日付行と曜日行をセット
-        for i, dstr in enumerate(date_cols, start=2):  # B列から
-            try:
-                d = datetime.strptime(dstr, "%Y-%m-%d").date()
-            except Exception:
-                d = None
-            
-            # 日付表示（日のみ）
-            date_label = str(d.day) if d else dstr
-            ws.cell(row=header_row_date, column=i, value=date_label)
-            
-            # 曜日/祝日
-            if d:
-                is_holiday = bool(jpholiday and jpholiday.is_holiday(d))
-                w = "日月火水木金土"[d.weekday()]
-                wlabel = "祝" if is_holiday else w
-                ws.cell(row=header_row_wday, column=i, value=wlabel)
-                
-                # 列色（曜日ヘッダの背景）
-                if is_holiday or d.weekday() == 6:  # 日曜または祝日
-                    col_fill = fill_sun
-                elif d.weekday() == 5:  # 土曜
-                    col_fill = fill_sat
-                else:
-                    col_fill = fill_week
-            else:
-                ws.cell(row=header_row_wday, column=i, value="")
-                col_fill = fill_week
-            
-            # ヘッダの体裁
-            for r in (header_row_date, header_row_wday):
-                c = ws.cell(row=r, column=i)
-                c.font = font_header
-                c.alignment = align_center
-                c.fill = col_fill
-                c.border = border
-        
-        # A列ヘッダの体裁
-        for r in (header_row_date, header_row_wday):
-            c = ws.cell(row=r, column=1)
-            c.font = font_header
-            c.alignment = align_center
-            c.fill = PatternFill("solid", fgColor="F2F2F2")
-            c.border = border
-        
-        # 本体セルの体裁（勤務記号で色）
-        body_end_row = body_start_row + len(calendar_df.index) - 1
-        
-        for r in range(body_start_row, body_end_row + 1):
-            for ccol in range(1, last_col + 1):
-                cell = ws.cell(row=r, column=ccol)
-                cell.alignment = align_center
-                cell.border = border
-                
-                # 名前列は薄いグレー
-                if ccol == 1:
-                    cell.fill = PatternFill("solid", fgColor="F7F7F7")
+
+            # カレンダー（現場配布用）
+            calendar_df.to_excel(writer, sheet_name='calendar')
+
+            wb = writer.book
+            ws = wb['calendar']
+
+            # ---- 体裁（あなたの画像の形式に寄せる） ----
+            # 1行目にタイトルを挿入（年月）
+            month_str = str(self.config['month'])
+            ws.insert_rows(1)
+            ws['A1'] = f"{month_str} 勤務表"
+            ws['A1'].font = Font(bold=True, size=14)
+            ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=ws.max_column)
+
+            # 日付行（今は2行目がヘッダ（date_str）になっている）
+            # 3行目に曜日行を追加
+            ws.insert_rows(3)
+            ws['A3'] = '曜日'
+            ws['A3'].font = Font(bold=True)
+            ws['A2'] = 'メンバー'
+            ws['A2'].font = Font(bold=True)
+
+            # 罫線
+            thin = Side(style='thin', color='999999')
+            border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+            # 色（好みで変更OK）
+            fill_sat = PatternFill('solid', fgColor='DDEBF7')   # 土
+            fill_sun = PatternFill('solid', fgColor='FCE4D6')   # 日祝
+            fill_off = PatternFill('solid', fgColor='E7E6E6')   # 休
+            fill_work = PatternFill('solid', fgColor='E2F0D9')  # 勤務
+
+            # ヘッダ（日付・曜日）整形＋土日祝色
+            from datetime import datetime as dt
+            for col in range(2, ws.max_column + 1):
+                date_str = ws.cell(row=2, column=col).value  # YYYY-MM-DD
+                try:
+                    d = dt.strptime(date_str, '%Y-%m-%d').date()
+                except Exception:
                     continue
-                
-                v = str(cell.value) if cell.value is not None else ""
-                if v == "休":
-                    cell.fill = fill_off
-                elif v == "準夜":
-                    cell.fill = fill_night
-                elif v == "":
-                    cell.fill = fill_day  # 空白=勤務
-        
-        # 列幅調整
-        ws.column_dimensions["A"].width = 14
-        for i in range(2, last_col + 1):
-            ws.column_dimensions[get_column_letter(i)].width = 5
-        
-        # 行高
-        ws.row_dimensions[title_row].height = 22
-        ws.row_dimensions[header_row_date].height = 18
-        ws.row_dimensions[header_row_wday].height = 18
-        
-        # ウィンドウ枠固定
-        ws.freeze_panes = ws["B{}".format(body_start_row)]
-        
-        # 印刷設定
-        ws.page_setup.orientation = 'landscape'
-        ws.page_setup.fitToWidth = 1
-        ws.page_setup.fitToHeight = 0
+
+                # 日付表示を「1」「2」…にしたいならここを変更
+                ws.cell(row=2, column=col).value = str(d.day)
+
+                weekday_jp = ['月', '火', '水', '木', '金', '土', '日'][d.weekday()]
+                is_holiday = (jpholiday.is_holiday(d) if jpholiday else False)
+                if is_holiday:
+                    weekday_jp = '祝'
+
+                ws.cell(row=3, column=col).value = weekday_jp
+
+                # 土日祝の色（ヘッダ2行＝日付行＋曜日行）
+                if d.weekday() == 5:  # 土
+                    for r in (2, 3):
+                        ws.cell(row=r, column=col).fill = fill_sat
+                elif d.weekday() == 6 or is_holiday:  # 日 or 祝
+                    for r in (2, 3):
+                        ws.cell(row=r, column=col).fill = fill_sun
+
+                # ヘッダ中央寄せ
+                for r in (2, 3):
+                    ws.cell(row=r, column=col).alignment = Alignment(horizontal='center', vertical='center')
+                    ws.cell(row=r, column=col).font = Font(bold=True)
+
+            # 本体セル（勤務/休の色付け）
+            for r in range(4, ws.max_row + 1):
+                # 名前列
+                ws.cell(row=r, column=1).alignment = Alignment(horizontal='left', vertical='center')
+                ws.cell(row=r, column=1).font = Font(bold=True)
+
+                for c in range(2, ws.max_column + 1):
+                    v = ws.cell(row=r, column=c).value
+                    ws.cell(row=r, column=c).alignment = Alignment(horizontal='center', vertical='center')
+                    if v == '休':
+                        ws.cell(row=r, column=c).fill = fill_off
+                    else:
+                        ws.cell(row=r, column=c).fill = fill_work
+
+            # 全セル罫線
+            for r in range(1, ws.max_row + 1):
+                for c in range(1, ws.max_column + 1):
+                    ws.cell(row=r, column=c).border = border
+
+            # 枠固定：タイトル＋日付＋曜日（3行）＋名前列（A列）
+            ws.freeze_panes = 'B4'
+
+            # 列幅（A=名前）
+            ws.column_dimensions['A'].width = 14
+            for col in range(2, ws.max_column + 1):
+                ws.column_dimensions[get_column_letter(col)].width = 4
+
+        print("保存完了")
     
     def print_summary(self):
         """サマリーを表示"""
