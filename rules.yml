@@ -1,0 +1,40 @@
+# ShiftGuard ルール設定ファイル
+# 労務リスク判定の閾値を定義します
+# ※ config シートの値が優先されますが、config に値がない場合はここがデフォルトになります
+
+# 警告しきい値（労務リスクチェックで使用）
+thresholds:
+  # 連続勤務日数の警告レベル
+  max_consecutive_workdays:
+    yellow: 6    # この日数を超えたらYELLOW警告
+    red: 8       # この日数を超えたらRED警告
+  
+  # 月間残業時間の推定値（36協定の一般的な上限）
+  max_month_overtime_hours:
+    yellow: 45   # この時間を超えたらYELLOW警告
+    red: 54      # この時間(45時間の1.2倍)を超えたらRED警告
+
+# 月間標準労働時間（残業推定の基準値）
+standard_month_hours: 160
+
+# シフト時間設定（残業推定に使用、config で上書き可能）
+shift_hours:
+  day: 8      # 日勤の標準時間
+  night: 10   # 夜勤の標準時間（深夜割増を考慮）
+
+# 動作ルール（将来の拡張用）
+rules:
+  # 希望休違反を必ずREDにする
+  strict_requested_off: true
+  
+  # 土日祝不可の人への割り当てを警告
+  warn_weekend_restriction: true
+  
+  # 人数不足を必ずREDにする
+  strict_understaffed: true
+
+# カスタムメッセージ
+messages:
+  disclaimer: |
+    このツールは簡易的なシフト生成および労務リスク警告を提供します。
+    法的な助言ではありません。最終的な判断は管理者の責任で行ってください。
